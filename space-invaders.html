@@ -1,0 +1,757 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Space Invaders · 3 рівня + бос</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            user-select: none;
+        }
+        body {
+            margin: 0;
+            min-height: 100vh;
+            background: #0a0f1e;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            font-family: 'Courier New', Courier, monospace;
+        }
+        .game-container {
+            position: relative;
+            width: 900px;
+            max-width: 95vw;
+            aspect-ratio: 4 / 3;
+            border: 4px solid #3cff6a;
+            border-radius: 16px;
+            box-shadow: 0 0 20px #00ffaa55;
+            background: #010314;
+        }
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+            background-color: #03051a;
+            image-rendering: crisp-edges;
+            border-radius: 12px;
+        }
+        .ui-overlay {
+            position: absolute;
+            top: 10px;
+            left: 20px;
+            right: 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            color: #0ff;
+            text-shadow: 0 0 8px cyan;
+            font-size: 1.5rem;
+            font-weight: bold;
+            pointer-events: none;
+            z-index: 10;
+        }
+        .ui-overlay span {
+            background: #111a2bdd;
+            padding: 6px 18px;
+            border-radius: 40px;
+            border: 1px solid #3cff6a;
+            backdrop-filter: blur(2px);
+        }
+        .level-indicator {
+            position: absolute;
+            top: 70px;
+            left: 20px;
+            color: #ffb347;
+            font-size: 1.3rem;
+            text-shadow: 0 0 8px orange;
+            background: #1a1f30aa;
+            padding: 4px 16px;
+            border-radius: 20px;
+            border: 1px solid gold;
+            backdrop-filter: blur(2px);
+            pointer-events: none;
+            z-index: 10;
+        }
+        .game-overlay {
+            position: absolute;
+            top: 0; left: 0; right: 0; bottom: 0;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            background: #010314ee;
+            color: #ffd966;
+            font-size: 2.2rem;
+            font-weight: bold;
+            text-shadow: 0 0 15px #ffaa00;
+            border-radius: 12px;
+            pointer-events: none;
+            z-index: 20;
+            transition: opacity 0.2s;
+        }
+        .game-overlay.hidden {
+            opacity: 0;
+            pointer-events: none;
+        }
+        .game-overlay .small {
+            font-size: 1.3rem;
+            color: #8af;
+            margin-top: 10px;
+            text-shadow: 0 0 8px blue;
+        }
+        .restart-hint {
+            position: absolute;
+            bottom: 30px;
+            left: 0;
+            right: 0;
+            text-align: center;
+            color: #b0f0b0;
+            font-size: 1.1rem;
+            background: #0a1a2aaa;
+            padding: 8px;
+            border-top: 1px dashed #2f9;
+            border-bottom: 1px dashed #2f9;
+            width: fit-content;
+            margin: 0 auto;
+            border-radius: 40px;
+            backdrop-filter: blur(3px);
+            pointer-events: none;
+        }
+        button {
+            display: none;
+        }
+    </style>
+</head>
+<body>
+<div class="game-container">
+    <canvas id="gameCanvas" width="900" height="675"></canvas>
+    <div class="ui-overlay">
+        <span id="scoreDisplay">0000</span>
+        <span id="livesDisplay">❤️❤️❤️</span>
+        <span id="highScoreDisplay">🏆 0000</span>
+    </div>
+    <div class="level-indicator" id="levelDisplay">РІВЕНЬ 1</div>
+    <div id="gameOverlay" class="game-overlay">
+        <div id="gameOverText">SPACE INVADERS</div>
+        <div class="small" id="finalScore"></div>
+        <div class="restart-hint" style="position: relative; bottom: auto; margin-top: 30px;">⏎ ENTER · щоб зіграти знову</div>
+    </div>
+    <div class="restart-hint">←  →  /  A  D   ·   ␣ стріляти   ·   ❤️ 25% шанс</div>
+</div>
+
+<script>
+(function() {
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    const CW = 900, CH = 675;
+    canvas.width = CW; canvas.height = CH;
+
+    // UI
+    const scoreSpan = document.getElementById('scoreDisplay');
+    const livesSpan = document.getElementById('livesDisplay');
+    const highScoreSpan = document.getElementById('highScoreDisplay');
+    const levelSpan = document.getElementById('levelDisplay');
+    const gameOverlay = document.getElementById('gameOverlay');
+    const gameOverText = document.getElementById('gameOverText');
+    const finalScoreSpan = document.getElementById('finalScore');
+
+    // ---------- звук ----------
+    let audioCtx = null;
+    let backgroundMusicActive = false;
+    let musicInterval = null;
+    let soundEnabled = false;
+
+    function initAudio() {
+        if (audioCtx) return;
+        try {
+            audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        } catch(e) { console.warn("Web Audio не підтримується"); }
+    }
+
+    function playShoot() {
+        if (!audioCtx || !soundEnabled) return;
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.type = 'sawtooth';
+        osc.frequency.value = 720;
+        gain.gain.value = 0.12;
+        osc.connect(gain).connect(audioCtx.destination);
+        osc.start();
+        osc.stop(audioCtx.currentTime + 0.08);
+    }
+
+    function playExplosion() {
+        if (!audioCtx || !soundEnabled) return;
+        const bufferSize = 4096;
+        const noise = audioCtx.createBufferSource();
+        const arr = new Float32Array(bufferSize);
+        for (let i = 0; i < bufferSize; i++) arr[i] = Math.random() * 2 - 1;
+        const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+        buffer.copyToChannel(arr, 0);
+        noise.buffer = buffer;
+        const gain = audioCtx.createGain();
+        gain.gain.value = 0.2;
+        gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.15);
+        noise.connect(gain).connect(audioCtx.destination);
+        noise.start();
+        noise.stop(audioCtx.currentTime + 0.15);
+    }
+
+    function playHeartCollect() {
+        if (!audioCtx || !soundEnabled) return;
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.type = 'sine';
+        osc.frequency.value = 880;
+        gain.gain.value = 0.1;
+        gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.2);
+        osc.connect(gain).connect(audioCtx.destination);
+        osc.start();
+        osc.stop(audioCtx.currentTime + 0.2);
+    }
+
+    function startBackgroundMusic() {
+        if (!audioCtx || backgroundMusicActive || !soundEnabled) return;
+        backgroundMusicActive = true;
+        let pattern = [220, 220, 330, 330, 440, 440, 330];
+        let idx = 0;
+        if (musicInterval) clearInterval(musicInterval);
+        musicInterval = setInterval(() => {
+            if (!backgroundMusicActive || !audioCtx || !soundEnabled) return;
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.type = 'square';
+            osc.frequency.value = pattern[idx % pattern.length];
+            gain.gain.value = 0.04;
+            osc.connect(gain).connect(audioCtx.destination);
+            osc.start();
+            osc.stop(audioCtx.currentTime + 0.12);
+            idx++;
+        }, 300);
+    }
+
+    function stopBackgroundMusic() {
+        backgroundMusicActive = false;
+        if (musicInterval) {
+            clearInterval(musicInterval);
+            musicInterval = null;
+        }
+    }
+
+    function enableSoundAndMusic() {
+        if (soundEnabled) return;
+        initAudio();
+        if (audioCtx && audioCtx.state === 'suspended') {
+            audioCtx.resume().then(() => {
+                soundEnabled = true;
+                startBackgroundMusic();
+            }).catch(() => {});
+        } else if (audioCtx) {
+            soundEnabled = true;
+            startBackgroundMusic();
+        }
+    }
+
+    // ---------- константи ----------
+    const PLAYER_WIDTH = 44, PLAYER_HEIGHT = 24;
+    const PLAYER_SPEED = 7;
+    const ALIEN_ROWS_BASE = 5;
+    const ALIEN_W = 32, ALIEN_H = 24;
+    const ALIEN_SPACING = 14;
+    const ALIEN_BASE_SPEED = 1.4;
+    const PLAYER_BULLET_SPEED = -5.5;
+    const ENEMY_BULLET_SPEED = 3.2;
+    const MAX_PLAYER_BULLETS = 5;
+    const ENEMY_SHOOT_COOLDOWN = 28; // зменшено на 20%
+
+    // бос
+    const BOSS_WIDTH = 80, BOSS_HEIGHT = 50;
+    const BOSS_HEALTH = 12;
+    const BOSS_SPEED = 2.2;
+    const BOSS_SHOOT_COOLDOWN = 30; // було 18, тепер рідше
+
+    // рівні
+    const MAX_LEVEL = 3;
+    const LEVEL_COLS = [10, 11, 12]; // кількість колонок для 1,2,3 рівня
+    const LEVEL_SPEED_MULT = [1.0, 1.3, 1.6];
+
+    // ---------- стан ----------
+    let gameState = 'start'; // 'playing', 'gameover', 'victory'
+    let player = { x: CW/2 - PLAYER_WIDTH/2, y: CH - 60, width: PLAYER_WIDTH, height: PLAYER_HEIGHT };
+    let aliens = [];
+    let alienDirection = 1;
+    let alienSpeed = ALIEN_BASE_SPEED;
+    let alienBottomReached = false;
+    let playerBullets = [];
+    let enemyBullets = [];
+    let particles = [];
+    let powerups = [];
+    let lives = 3;
+    let score = 0;
+    let highScore = 0;
+    let alienCount = 0;
+    let framesSinceLastEnemyShot = 0;
+    let boss = null;
+
+    // рівні
+    let currentLevel = 1;
+
+    // рекорд
+    try {
+        const saved = localStorage.getItem('spaceInvadersHighScore');
+        if (saved) highScore = parseInt(saved, 10) || 0;
+    } catch(e) {}
+    highScoreSpan.innerText = `🏆 ${String(highScore).padStart(4,'0')}`;
+
+    // ---------- ініціалізація прибульців за рівнем ----------
+    function initAliens(level) {
+        aliens = [];
+        const cols = LEVEL_COLS[level-1];
+        const startX = 120; // зміщено від лівого краю
+        for (let row = 0; row < ALIEN_ROWS_BASE; row++) {
+            for (let col = 0; col < cols; col++) {
+                aliens.push({
+                    x: startX + col * (ALIEN_W + ALIEN_SPACING),
+                    y: 60 + row * (ALIEN_H + ALIEN_SPACING),
+                    w: ALIEN_W, h: ALIEN_H,
+                    row: row,
+                    col: col,
+                    alive: true
+                });
+            }
+        }
+        alienDirection = 1;
+        alienSpeed = ALIEN_BASE_SPEED * LEVEL_SPEED_MULT[level-1];
+        alienCount = aliens.length;
+        boss = null;
+        levelSpan.innerText = `РІВЕНЬ ${level}`;
+    }
+
+    // скинути гру повністю
+    function resetGame() {
+        stopBackgroundMusic();
+        player.x = CW/2 - PLAYER_WIDTH/2;
+        player.y = CH - 60;
+        playerBullets = [];
+        enemyBullets = [];
+        particles = [];
+        powerups = [];
+        lives = 3;
+        score = 0;
+        currentLevel = 1;
+        updateScoreUI();
+        initAliens(1);
+        gameState = 'playing';
+        gameOverlay.classList.add('hidden');
+        if (soundEnabled) startBackgroundMusic();
+    }
+
+    // перехід на наступний рівень
+    function nextLevel() {
+        if (currentLevel < MAX_LEVEL) {
+            currentLevel++;
+            initAliens(currentLevel);
+            // невелика пауза або повідомлення (можна додати звук)
+        } else {
+            // після максимального рівня – бос
+            spawnBoss();
+        }
+    }
+
+    function spawnBoss() {
+        boss = {
+            x: CW/2 - BOSS_WIDTH/2,
+            y: 60,
+            w: BOSS_WIDTH,
+            h: BOSS_HEIGHT,
+            health: BOSS_HEALTH,
+            dx: BOSS_SPEED,
+            shootTimer: BOSS_SHOOT_COOLDOWN
+        };
+        levelSpan.innerText = 'БОС';
+    }
+
+    // завершення гри
+    function gameOver(win = false) {
+        if (gameState !== 'playing') return;
+        gameState = 'gameover';
+        stopBackgroundMusic();
+        gameOverText.innerText = win ? 'ПЕРЕМОГА!' : 'GAME OVER';
+        finalScoreSpan.innerText = `ваш рахунок : ${String(score).padStart(4,'0')}`;
+        gameOverlay.classList.remove('hidden');
+        if (score > highScore) {
+            highScore = score;
+            try { localStorage.setItem('spaceInvadersHighScore', highScore); } catch(e) {}
+            highScoreSpan.innerText = `🏆 ${String(highScore).padStart(4,'0')}`;
+        }
+    }
+
+    // оновлення UI
+    function updateScoreUI() {
+        scoreSpan.innerText = String(score).padStart(4,'0');
+        let hearts = '';
+        for (let i=0; i<lives; i++) hearts += '❤️';
+        livesSpan.innerText = hearts.padEnd(3,' ');
+    }
+
+    // вибух
+    function createExplosion(px, py) {
+        for (let i=0; i<8; i++) {
+            particles.push({
+                x: px, y: py,
+                vx: (Math.random()-0.5)*4,
+                vy: (Math.random()-0.5)*4 - 1,
+                life: 1.0,
+                size: 3 + Math.random()*4
+            });
+        }
+        playExplosion();
+    }
+
+    // створити серце
+    function spawnHeart(px, py) {
+        powerups.push({
+            x: px - 8, y: py - 8,
+            w: 16, h: 16,
+            vy: 2.2,
+            type: 'heart'
+        });
+    }
+
+    // ---------- оновлення логіки ----------
+    function update() {
+        if (gameState !== 'playing') return;
+
+        // ---- обробка боса ----
+        if (boss) {
+            boss.x += boss.dx;
+            if (boss.x <= 20 || boss.x + boss.w >= CW - 20) {
+                boss.dx *= -1;
+            }
+            boss.shootTimer--;
+            if (boss.shootTimer <= 0) {
+                enemyBullets.push({
+                    x: boss.x + boss.w/2 - 3,
+                    y: boss.y + boss.h,
+                    w: 6, h: 14,
+                    speed: ENEMY_BULLET_SPEED * 1.1
+                });
+                boss.shootTimer = BOSS_SHOOT_COOLDOWN;
+            }
+
+            if (boss.y + boss.h >= CH - 60) {
+                gameOver(false);
+                return;
+            }
+        }
+
+        // ---- звичайні вороги (якщо є) ----
+        if (aliens.length > 0) {
+            let leftMost = 9999, rightMost = -9999, bottomMost = -9999;
+            aliens.forEach(a => {
+                if (!a.alive) return;
+                leftMost = Math.min(leftMost, a.x);
+                rightMost = Math.max(rightMost, a.x + a.w);
+                bottomMost = Math.max(bottomMost, a.y + a.h);
+            });
+
+            if (bottomMost >= CH - 80) {
+                gameOver(false);
+                return;
+            }
+
+            if ((alienDirection > 0 && rightMost >= CW - 30) || (alienDirection < 0 && leftMost <= 30)) {
+                alienDirection *= -1;
+                aliens.forEach(a => { if (a.alive) a.y += ALIEN_H/2; });
+            }
+
+            let step = alienDirection * alienSpeed;
+            aliens.forEach(a => { if (a.alive) a.x += step; });
+
+            // стрільба ворогів тільки якщо нема боса
+            if (!boss) {
+                framesSinceLastEnemyShot++;
+                if (framesSinceLastEnemyShot >= ENEMY_SHOOT_COOLDOWN && aliens.length > 0) {
+                    let bottomAliens = [];
+                    let maxYByCol = {};
+                    aliens.forEach(a => {
+                        if (!a.alive) return;
+                        let col = a.col;
+                        if (!maxYByCol[col] || a.y > maxYByCol[col]) maxYByCol[col] = a.y;
+                    });
+                    aliens.forEach(a => {
+                        if (a.alive && a.y === maxYByCol[a.col]) bottomAliens.push(a);
+                    });
+                    if (bottomAliens.length > 0) {
+                        let shooter = bottomAliens[Math.floor(Math.random() * bottomAliens.length)];
+                        enemyBullets.push({
+                            x: shooter.x + shooter.w/2 - 2.5,
+                            y: shooter.y + shooter.h,
+                            w: 5, h: 12,
+                            speed: ENEMY_BULLET_SPEED
+                        });
+                    }
+                    framesSinceLastEnemyShot = 0;
+                }
+            }
+        } else {
+            // ворогів нема – якщо нема боса, переходимо на наступний рівень або створюємо боса
+            if (!boss) {
+                if (currentLevel < MAX_LEVEL) {
+                    nextLevel();
+                } else {
+                    spawnBoss();
+                }
+            }
+        }
+
+        // ---- кулі гравця ----
+        for (let i = playerBullets.length-1; i>=0; i--) {
+            let b = playerBullets[i];
+            b.y += PLAYER_BULLET_SPEED;
+            if (b.y + b.h < 0) {
+                playerBullets.splice(i,1);
+                continue;
+            }
+            let hit = false;
+            // перевірка попадання в звичайних ворогів
+            for (let j = aliens.length-1; j>=0; j--) {
+                let a = aliens[j];
+                if (!a.alive) continue;
+                if (b.x < a.x + a.w && b.x + b.w > a.x && b.y < a.y + a.h && b.y + b.h > a.y) {
+                    a.alive = false;
+                    hit = true;
+                    score += 100;
+                    alienCount--;
+                    updateScoreUI();
+                    createExplosion(a.x + a.w/2, a.y + a.h/2);
+                    if (Math.random() < 0.25) {
+                        spawnHeart(a.x + a.w/2, a.y + a.h/2);
+                    }
+                    break;
+                }
+            }
+            if (!hit && boss) {
+                if (b.x < boss.x + boss.w && b.x + b.w > boss.x && b.y < boss.y + boss.h && b.y + b.h > boss.y) {
+                    boss.health--;
+                    hit = true;
+                    createExplosion(boss.x + boss.w/2, boss.y + boss.h/2);
+                    if (boss.health <= 0) {
+                        score += 1000;
+                        updateScoreUI();
+                        gameOver(true); // перемога після боса
+                        return;
+                    }
+                }
+            }
+            if (hit) {
+                playerBullets.splice(i,1);
+                aliens = aliens.filter(a => a.alive);
+            }
+        }
+
+        // ---- ворожі кулі ----
+        for (let i = enemyBullets.length-1; i>=0; i--) {
+            let b = enemyBullets[i];
+            b.y += b.speed;
+            if (b.y > CH) {
+                enemyBullets.splice(i,1);
+                continue;
+            }
+            if (b.x < player.x + player.width && b.x + b.w > player.x &&
+                b.y < player.y + player.height && b.y + b.h > player.y) {
+                enemyBullets.splice(i,1);
+                lives--;
+                updateScoreUI();
+                createExplosion(player.x + player.width/2, player.y + player.height/2);
+                if (lives <= 0) {
+                    gameOver(false);
+                    return;
+                }
+            }
+        }
+
+        // ---- сердечка ----
+        for (let i = powerups.length-1; i>=0; i--) {
+            let h = powerups[i];
+            h.y += h.vy;
+            if (h.y > CH) {
+                powerups.splice(i,1);
+                continue;
+            }
+            if (h.x < player.x + player.width && h.x + h.w > player.x &&
+                h.y < player.y + player.height && h.y + h.h > player.y) {
+                if (lives < 5) {
+                    lives++;
+                    updateScoreUI();
+                    playHeartCollect();
+                }
+                powerups.splice(i,1);
+            }
+        }
+
+        // ---- частинки ----
+        for (let i=particles.length-1; i>=0; i--) {
+            let p = particles[i];
+            p.x += p.vx;
+            p.y += p.vy;
+            p.life -= 0.02;
+            if (p.life <= 0 || p.y > CH || p.y < 0) {
+                particles.splice(i,1);
+            }
+        }
+    }
+
+    // ---------- малювання ----------
+    function draw() {
+        ctx.clearRect(0, 0, CW, CH);
+
+        // зірки
+        ctx.fillStyle = '#fff';
+        for (let i=0; i<120; i++) {
+            let sx = (i*23 + Date.now()*0.02) % CW;
+            let sy = (i*13) % CH;
+            ctx.fillRect(sx, sy, 1.5, 1.5);
+        }
+
+        // гравець
+        ctx.fillStyle = '#3cff6a';
+        ctx.shadowColor = '#00ff99';
+        ctx.shadowBlur = 12;
+        ctx.beginPath();
+        ctx.moveTo(player.x, player.y + player.height);
+        ctx.lineTo(player.x + player.width/2, player.y);
+        ctx.lineTo(player.x + player.width, player.y + player.height);
+        ctx.closePath();
+        ctx.fill();
+        ctx.fillStyle = '#affa7a';
+        ctx.fillRect(player.x + player.width/2-3, player.y-6, 6, 8);
+
+        // прибульці
+        ctx.shadowColor = '#ff3366';
+        aliens.forEach(a => {
+            if (!a.alive) return;
+            ctx.fillStyle = '#ff3a4d';
+            ctx.fillRect(a.x, a.y, a.w, a.h);
+            ctx.fillStyle = '#ffe68f';
+            ctx.fillRect(a.x+6, a.y+5, 6, 6);
+            ctx.fillRect(a.x+20, a.y+5, 6, 6);
+        });
+
+        // бос
+        if (boss) {
+            ctx.fillStyle = '#b300b3';
+            ctx.shadowColor = '#ff66ff';
+            ctx.fillRect(boss.x, boss.y, boss.w, boss.h);
+            ctx.fillStyle = '#ffccff';
+            ctx.font = 'bold 20px monospace';
+            ctx.fillText('👾', boss.x+10, boss.y+35);
+            // смужка здоров'я
+            ctx.fillStyle = '#ff4444';
+            ctx.fillRect(boss.x, boss.y-10, boss.w, 6);
+            ctx.fillStyle = '#00ff00';
+            ctx.fillRect(boss.x, boss.y-10, (boss.health/BOSS_HEALTH)*boss.w, 6);
+        }
+
+        // кулі гравця
+        ctx.shadowColor = '#ffd966';
+        ctx.fillStyle = '#fee761';
+        playerBullets.forEach(b => {
+            ctx.fillRect(b.x, b.y, b.w, b.h);
+        });
+
+        // ворожі кулі
+        ctx.fillStyle = '#ffa500';
+        ctx.shadowColor = '#ff7b00';
+        enemyBullets.forEach(b => {
+            ctx.fillRect(b.x, b.y, b.w, b.h);
+        });
+
+        // сердечка
+        ctx.shadowColor = '#ff69b4';
+        powerups.forEach(p => {
+            ctx.fillStyle = '#ff3366';
+            ctx.beginPath();
+            ctx.moveTo(p.x+8, p.y+4);
+            ctx.bezierCurveTo(p.x, p.y, p.x-4, p.y+8, p.x+8, p.y+14);
+            ctx.bezierCurveTo(p.x+20, p.y+8, p.x+16, p.y, p.x+8, p.y+4);
+            ctx.fill();
+        });
+
+        // частинки
+        ctx.shadowBlur = 8;
+        particles.forEach(p => {
+            ctx.globalAlpha = p.life;
+            ctx.fillStyle = `hsl(${30+Math.random()*20}, 90%, 60%)`;
+            ctx.fillRect(p.x, p.y, p.size, p.size);
+        });
+
+        ctx.globalAlpha = 1.0;
+        ctx.shadowBlur = 0;
+        ctx.shadowColor = 'transparent';
+    }
+
+    // ---------- клавіші ----------
+    const keys = {};
+    window.addEventListener('keydown', (e) => {
+        const key = e.key;
+        if ([" ", "ArrowLeft", "ArrowRight", "a", "A", "d", "D", "Enter"].includes(key)) {
+            e.preventDefault();
+        }
+        enableSoundAndMusic();
+
+        if (gameState === 'playing' && (key === ' ' || key === 'Space')) {
+            if (playerBullets.length < MAX_PLAYER_BULLETS) {
+                playerBullets.push({
+                    x: player.x + player.width/2 - 2.5,
+                    y: player.y - 12,
+                    w: 5, h: 12
+                });
+                playShoot();
+            }
+        }
+
+        if (gameState === 'playing') {
+            if (key === 'ArrowLeft' || key === 'a' || key === 'A') keys.left = true;
+            if (key === 'ArrowRight' || key === 'd' || key === 'D') keys.right = true;
+        }
+
+        if (key === 'Enter') {
+            resetGame();
+        }
+    });
+
+    window.addEventListener('keyup', (e) => {
+        const key = e.key;
+        if (key === 'ArrowLeft' || key === 'a' || key === 'A') keys.left = false;
+        if (key === 'ArrowRight' || key === 'd' || key === 'D') keys.right = false;
+    });
+
+    // рух гравця
+    setInterval(() => {
+        if (gameState !== 'playing') return;
+        if (keys.left) player.x = Math.max(10, player.x - PLAYER_SPEED);
+        if (keys.right) player.x = Math.min(CW - player.width - 10, player.x + PLAYER_SPEED);
+    }, 16);
+
+    // ---------- старт ----------
+    initAliens(1);
+    updateScoreUI();
+    gameOverlay.classList.remove('hidden');
+    gameOverText.innerText = 'SPACE INVADERS';
+    finalScoreSpan.innerText = 'натисніть ENTER';
+    levelSpan.innerText = 'РІВЕНЬ 1';
+
+    canvas.addEventListener('click', () => enableSoundAndMusic());
+
+    function gameLoop() {
+        update();
+        draw();
+        requestAnimationFrame(gameLoop);
+    }
+    gameLoop();
+})();
+</script>
+</body>
+</html>
